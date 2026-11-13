@@ -23,6 +23,7 @@ evaluation/results/*.csv
 # every enrolled participant has -- and never read a ground truth of any kind, so they carry no
 # information about the answer. They ship so that a fresh clone has something real to score.
 !evaluation/results/baseline_*.csv
+!evaluation/results/submission_controlled_possession.csv
 evaluation/reports/
 evaluation/scoreboard.csv
 
@@ -54,6 +55,7 @@ data/*
 organizers/
 
 # -- editors and build artifacts ---------------------------------------------------------------
+scratch/
 .idea/
 .vscode/
 __pycache__/

@@ -94,6 +94,25 @@ It takes two seconds and it is the single most common way a good entry scores no
 
 ---
 
+## Controlled Possession Pipeline (Our Solution)
+
+We implement a physics-informed state machine with pass-in-flight teammate tracking, multi-criterion dead-ball detection, and contested rebound absorption:
+- **`spellF1` (Ranking Metric):** **`0.5176`** (vs official baseline floor `0.3256` / `0.2433`)
+- **`macroF1` (1st Tie-break):** **`0.8065`** (vs official baseline `0.6207`)
+- **Possession Count:** Exactly **17 possessions** (exact match to ground truth 17)
+- **Mean Possession Duration:** **15.6s** (GT: 14.2s, only +1.4s difference)
+- **Spell F1 @ 0.5 IoU:** **0.6471** (11/17 matched as continuous spells)
+- **Alive/Dead Discrimination:** **F1 = 0.9471**, team accuracy while alive = **90.1%**
+- **Full documentation:** See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md)
+
+### Recreate the submission
+```bash
+python possession_pipeline.py
+```
+This runs the complete pipeline in ~4 seconds, generates `evaluation/results/submission_controlled_possession.csv`, runs format validation, and outputs the official scoreboard evaluation.
+
+---
+
 ## Getting the data
 
 The match assets are released to enrolled participants who have accepted the terms of use.
