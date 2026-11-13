@@ -1,5 +1,6 @@
 # More than a Hack 2027 — Phase 1: Controlled Possession Pipeline Technical Report
 
+**Team:** E-GEN  
 **Match:** FC Barcelona vs Athletic Club (`BAR-ATH`), LaLiga EA Sports 2024-25 Matchday 2  
 **Target:** Continuous frame-by-frame ball possession classification (`H`, `A`, `D`, `X`) for 199,319 tactical video frames (25 fps).
 

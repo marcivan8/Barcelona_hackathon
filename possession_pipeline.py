@@ -328,16 +328,22 @@ def main():
     out_dir = os.path.join(HERE, "evaluation", "results")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "submission_controlled_possession.csv")
+    team_csv_results = os.path.join(out_dir, "E-GEN.csv")
+    team_csv_root = os.path.join(HERE, "E-GEN.csv")
 
     labels = build_controlled_possession()
-    print(f"Writing {out_path} ...")
+    print(f"Writing {out_path} and {team_csv_results} ...")
+    csv_content = "frame,label\n" + "".join(f"{i},{lbl}\n" for i, lbl in enumerate(labels))
     with open(out_path, "w") as f:
-        f.write("frame,label\n")
-        f.writelines(f"{i},{lbl}\n" for i, lbl in enumerate(labels))
+        f.write(csv_content)
+    with open(team_csv_results, "w") as f:
+        f.write(csv_content)
+    with open(team_csv_root, "w") as f:
+        f.write(csv_content)
 
-    print(f"Done! Saved {len(labels)} rows to {out_path}")
+    print(f"Done! Saved {len(labels)} rows to {team_csv_results} and {team_csv_root}")
     print("Validating submission format...")
-    os.system(f'"{sys.executable}" evaluation/validate_submission.py "{out_path}"')
+    os.system(f'"{sys.executable}" evaluation/validate_submission.py "{team_csv_results}"')
     print("\nRunning evaluation on public ground truth...")
     os.system(f'"{sys.executable}" evaluation/run_evaluation.py')
 

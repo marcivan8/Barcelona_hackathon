@@ -24,6 +24,8 @@ evaluation/results/*.csv
 # information about the answer. They ship so that a fresh clone has something real to score.
 !evaluation/results/baseline_*.csv
 !evaluation/results/submission_controlled_possession.csv
+!evaluation/results/E-GEN.csv
+!E-GEN.csv
 evaluation/reports/
 evaluation/scoreboard.csv
 
@@ -46,9 +48,11 @@ data/*
 # The 2026 edition's documents were moved to ../mtah2027-organizers/archive-2026/ -- they describe
 # a different competition and belong with the organiser tooling, not in this repository.
 #
-# *.pdf stays as insurance: internal decks and proposals have a habit of landing in the working
+# *.pdf
+!E-GEN.pdf stays as insurance: internal decks and proposals have a habit of landing in the working
 # tree, and this repository is public.
 *.pdf
+!E-GEN.pdf
 
 # Organiser tooling lives in ../mtah2027-organizers, outside this repository. This line is
 # insurance against it being recreated in here by habit.
