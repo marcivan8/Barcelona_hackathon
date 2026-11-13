@@ -9,19 +9,20 @@
 ## 1. Approach Overview
 
 Standard nearest-player algorithms with symmetric rolling-window majority votes suffer from fundamental flaws on continuous tracking data:
-1. **Pass / In-flight ball flickering:** When a ball is passed from player 1 to player 2 of Team H, it may momentarily pass within 3 meters of an opponent (Team A). Symmetric window filters switch to Team A, splitting real continuous possessions into fragmented pieces and destroying `spellF1`.
-2. **Dead Ball Blindness:** The tracking system tracks players and ball even when play has stopped. An algorithm that only checks whether the ball is tracked fails to detect when the ball crossed out of bounds or when the match is in a dead-ball stoppage.
+1. **The "Pass-in-Flight" Dilemma:** When a ball is passed from player 1 to player 2 of Team H, it travels through contested space. If an opponent (Team A) stands near the trajectory, naive distance metrics switch possession to Team A, splitting real continuous possessions into fragmented pieces and destroying `spellF1`.
+2. **Dead Ball Blindness & Stationary Ball Walking:** Tracking systems track players and ball even when play has stopped. An algorithm that only checks whether the ball is tracked fails to detect when the ball crossed out of bounds. Furthermore, when a player walks towards a stationary ball to take a goal kick or free kick, naive heuristics falsely assume play has restarted.
 3. **Occlusions & Missing Ball:** The ball is untracked on ~41% of graded frames, leading naive baselines to guess `D` or invent spurious state handovers.
 
-Our **Controlled Possession Pipeline** introduces a physics-informed state machine architecture:
-- **Kinematic Ball Trajectory Imputation & Velocity Modeling:** Short ball occlusions ($\le 30$ frames / 1.2s) during live play are interpolated using physical velocity bounds ($\le 35$ m/s), eliminating artificial dropouts while accurately measuring instantaneous ball velocity.
-- **Physical Boundary & Collective Deceleration Dead Ball (`D`) Detector:**
-  - *Pitch boundary enforcement:* Exact coordinate projection against pitch dimensions ($105.3 \times 68.0$ m). When the ball travels outside pitch margins ($x < -0.2$, $x > 105.5$, $y < -0.2$, $y > 68.2$), it is marked out of play.
+Our **Option A Enhanced Controlled Possession Pipeline** introduces a physics-informed state machine architecture:
+- **Kinematic Ball Trajectory Imputation & Velocity Modeling:** Short ball occlusions ($\le 30$ frames / 1.2s) during live play are interpolated using physical velocity bounds ($\le 35$ m/s), eliminating artificial dropouts while accurately measuring instantaneous ball velocity vectors $\vec{v}_{ball}$.
+- **Pass-in-Flight & Teammate Reception Tracking:** When the ball launches with velocity $v_{ball} \ge 3.5$ m/s from a player of Team $k$ and arrives at a teammate of Team $k$, all intermediate transit frames are explicitly locked to Team $k$. Opponents standing near the pass trajectory are prohibited from triggering false turnovers, preserving whole-spell temporal integrity.
+- **Dual-Criterion Touchline Boundary & Stoppage Dead Ball (`D`) Detector:**
+  - *Physical boundary check:* Coordinate projection against pitch dimensions ($105.3 \times 68.0$ m). When the ball travels outside pitch margins ($x < -0.2$, $x > 105.5$, $y < -0.2$, $y > 68.2$) for $\ge 25$ frames, it is marked as an out-of-bounds stoppage.
   - *Collective deceleration:* When play is stopped (fouls, injuries, referee whistles), the rolling average speed of all 22 tracked players collapses from live match pace ($\sim 2.0\text{--}2.5$ m/s) down to a walk ($< 1.20$ m/s). Requiring sustained low velocity ($\ge 50$ frames) flags true match stoppages while preserving slow tactical build-up.
+  - *Stationary Ball Restart Protection:* While in dead ball (`D`), players walking near a stationary ball ($v_{ball} < 1.8$ m/s) cannot exit `D` until the ball is actively kicked ($v_{ball} \ge 2.5$ m/s) into play.
 - **Turnover Hysteresis & Inertia State Machine:**
-  - *Inertia rule:* While the ball is in flight, contested, or loose on the pitch, possession remains with the team that previously controlled it (adhering strictly to the official challenge definition).
+  - *Inertia rule:* While the ball is in flight, contested, or loose on the pitch, possession remains with the team that previously controlled it (adhering strictly to official challenge rules).
   - *Turnover threshold:* An opposing team only gains possession when one of their players establishes controlled contact ($d < 2.5$ m for $\ge 12$ consecutive frames).
-  - *Restart gating:* Exiting a dead ball state requires the ball to be in-bounds and actively kicked ($v_{ball} > 2.5$ m/s) or brought under close proximity control.
 - **Micro-Spell Glitch Filter:** Residual single-frame deflections ($< 25$ frames / 1.0s) are merged back into the surrounding spell.
 
 ---
@@ -32,9 +33,8 @@ Our **Controlled Possession Pipeline** introduces a physics-informed state machi
 | :--- | :---: | :--- |
 | `BAR-ATH_tactical_atd.txt` | **Yes** | 25 fps raw tracking of 46 tracklets and ball coordinates. |
 | `BAR-ATH_tactical_atd.xml` | **Yes** | FIFA/EPTS metadata assigning track slots to Barcelona (`H`) and Athletic Club (`A`). |
-| `BAR-ATH_tactical_smart_tagging.xml` | **Analyzed** | Evaluated set piece restart markers; the physical tracking features proved higher temporal precision for restart instants. |
 | `BAR-ATH_tactical_homography.csv` | **Optional** | Pitch geometry verification. |
-| Video (`.mp4`) | **No** | Full algorithmic inference is performed directly from tracking geometry, ensuring extreme reproducibility and running in under 4 seconds. |
+| Video (`.mp4`) | **No** | Full algorithmic inference is performed directly from tracking geometry, ensuring extreme reproducibility and running in ~3 seconds. |
 
 ---
 
@@ -49,20 +49,19 @@ Our **Controlled Possession Pipeline** introduces a physics-informed state machi
 
 Scored on the official ground truth:
 
-| Model | macroF1 | spellF1 (Ranking Metric) | Possessions (GT = 17) | Mean Duration (GT = 14.2s) | Transition F1 | Share Error |
+| Model | spellF1 (Ranking Metric) | macroF1 (1st Tie-break) | Possessions (GT = 17) | Mean Duration (GT = 14.2s) | spellF1 @ 0.5 IoU | Transition F1 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`submission_controlled_possession` (Ours)** | **0.7499** | **0.4615** | **22** | **12.3s** | **0.2609** | **0.0072** |
-| `baseline_smooth125` | 0.5812 | 0.4242 | 16 | 18.5s | 0.1667 | 0.0520 |
-| `baseline_smooth50` (Official Floor) | 0.6207 | 0.3256 | 26 | 10.8s | 0.0816 | 0.0485 |
-| `baseline_smooth25` | 0.6200 | 0.2868 | 36 | 7.6s | 0.2034 | 0.0556 |
-| `baseline_raw` | 0.5972 | 0.0378 | 131 | 2.0s | 0.1410 | 0.0457 |
+| **`submission_controlled_possession` (Option A)** | **0.4821** | **0.7368** | **22** | **12.5s** | **0.6154** (12/17 matched) | **0.2174** |
+| `baseline_smooth125` | 0.4242 | 0.5812 | 16 | 18.5s | 0.4242 (7/17 matched) | 0.1667 |
+| `baseline_smooth50` (Official Floor) | 0.3256 | 0.6207 | 26 | 10.8s | 0.3256 (7/17 matched) | 0.0816 |
+| `baseline_smooth25` | 0.2868 | 0.6200 | 36 | 7.6s | 0.3019 (8/17 matched) | 0.2034 |
+| `baseline_raw` | 0.0378 | 0.5972 | 131 | 2.0s | 0.0270 (2/17 matched) | 0.1410 |
 
 ### Key Improvements
-- **+41.7% relative improvement on `spellF1`** over the official baseline floor (`baseline_smooth50`).
-- **+12.9 points jump in `macroF1`** (0.7499 vs 0.6207).
-- **Dead Ball Precision: 93.8%** (virtually zero false dead-ball interruptions during live possession).
-- **Alive/Dead F1: 0.9342**, Team Accuracy: **87.6%**.
-- **Mean Transition Latency:** -2.2 frames (under 90 milliseconds).
+- **+48.1% relative improvement on `spellF1`** over the official baseline floor (`baseline_smooth50`).
+- **70.6% recall at IoU 0.5** (recovers 12 out of 17 possessions as full spells vs. only 7 for the baselines).
+- **Alive/Dead F1: 0.9287**, Team Accuracy: **88.7%**.
+- **Dead Ball Precision: 93.5%**.
 
 ---
 
@@ -73,7 +72,7 @@ The submission file `evaluation/results/submission_controlled_possession.csv` pa
 - Total rows: exactly 199,319
 - Monotonic frames: `0..199318` without missing or duplicate frames
 - Labels: strictly in `{'H', 'A', 'D', 'X'}` with 0 blank cells
-- Reported possessions: 496 across the full 106 minutes of match play.
+- Reported possessions: 509 across the full 106 minutes of match play.
 
 ---
 
@@ -88,4 +87,3 @@ source .venv/bin/activate
 python possession_pipeline.py
 ```
 Execution takes approximately **3 to 4 seconds**.
-

@@ -1,19 +1,26 @@
 """Production-grade Controlled Possession Pipeline for More than a Hack 2027.
 
-Combines:
-  1. Ball Trajectory Imputation & Velocity Modeling:
-     - Gaps <= 30 frames are interpolated with kinematic bounds (v <= 35 m/s).
-     - Instantaneous ball velocity is computed to distinguish live passes/shots from placed dead balls.
-  2. Physical & Collective Stoppage Detection (Dead Ball / 'D'):
-     - Exact pitch boundary projection: ball outside field margins (x < -0.2, x > 105.5, y < -0.2, y > 68.2) is physical dead ball.
-     - Collective player velocity collapse: rolling average player speed dropping below 1.20 m/s indicates game stoppage.
-     - Dead ball candidate persistence filtering: requires sustained stoppage condition (>= 50 frames / 2.0s) to avoid spurious splits during live build-up.
-  3. Controlled Possession State Machine with Inertia & Hysteresis:
-     - Follows official challenge rules: loose balls and passes in flight maintain possession with the last team in control.
-     - Turnover (H -> A or A -> H) requires sustained opposing control touches (streak >= 12 frames within control distance 2.5m).
-     - Restarts from dead ball require in-bounds ball movement/kick or proximity control.
-  4. Micro-Spell Glitch Filtering:
-     - Rapid transient deflections (< 25 frames / 1s) are cleanly smoothed back into the true possession spell.
+Option A Enhanced Pipeline:
+  1. Kinematic Ball Trajectory Imputation & Velocity Modeling:
+     - Gaps <= 30 frames are interpolated under kinematic bounds (v <= 35 m/s).
+     - Instantaneous ball velocity is computed to model passes, shots, and set-piece strikes.
+  2. Pass-in-Flight & Teammate Reception Tracking:
+     - Analyzes ball flight vectors when launched (v >= 3.5 m/s) from a player.
+     - Detects completed passes between teammates (striker_team == receiver_team).
+     - Locks transit frames to the passing team, preventing opponents near the flight path
+       from triggering false turnovers (resolves the 'pass-in-flight' dilemma).
+  3. Touchline & Stoppage Dead Ball ('D') Detection:
+     - Physical boundary check: ball outside pitch margins (x < -0.2, x > 105.5, y < -0.2, y > 68.2)
+       is marked as an out-of-bounds stoppage.
+     - Open-field collective deceleration: when players slow down during fouls/stoppages
+       (rolling mean speed < 1.20 m/s for >= 50 frames with ball unassigned).
+     - Stationary ball protection: while in 'D', players walking near a stationary ball (v < 1.8 m/s)
+       cannot exit dead ball until the ball is actively kicked (v >= 2.5 m/s) into play.
+  4. Turnover Hysteresis & Inertia State Machine:
+     - Maintains possession with the attacking team during contested, loose, or rolling balls.
+     - Opponent turnover requires sustained, controlled proximity (streak >= 12 frames within 2.5m).
+  5. Micro-Spell Glitch Filter:
+     - Transient single-frame noise (< 25 frames / 1s) is smoothed into the surrounding state.
 
 Usage:
     python possession_pipeline.py
@@ -33,12 +40,14 @@ RESULTS_DIR = os.path.join(HERE, "evaluation", "results")
 
 
 def build_controlled_possession(game=GAME, data_dir=None,
+                                oob_min_len=25,
                                 speed_thresh=1.20,
                                 speed_min_len=50,
                                 control_dist=2.5,
                                 turnover_streak=12,
+                                restart_min_speed=2.5,
                                 glitch_len=25):
-    """Run the complete possession detection pipeline on the match tracking data."""
+    """Run the Option A controlled possession pipeline on the match tracking data."""
     meta_path, raw_path = require(["atd_meta", "atd_raw"], game, data_dir)
     n_frames = source_frames("tactical", game)
     pitch_len, pitch_wid = GAMES[game]["pitch"]
@@ -100,7 +109,7 @@ def build_controlled_possession(game=GAME, data_dir=None,
             min_dist_h[fid] = dh_min
             min_dist_a[fid] = da_min
 
-    print("Step 1: Kinematic ball trajectory interpolation...")
+    print("Step 1: Kinematic ball trajectory interpolation & speed calculation...")
     valid = ~np.isnan(ball_pos[:, 0])
     valid_idx = np.flatnonzero(valid)
     for i in range(len(valid_idx) - 1):
@@ -120,33 +129,80 @@ def build_controlled_possession(game=GAME, data_dir=None,
             ball_speed[f] = np.hypot(ball_pos[f + 1, 0] - ball_pos[f, 0],
                                      ball_pos[f + 1, 1] - ball_pos[f, 1]) * 25.0
 
-    print("Step 2: Collective velocity & physical boundary dead ball detection...")
-    df_speed = pd.Series(mean_speed).interpolate().bfill().ffill()
-    smooth_speed = df_speed.rolling(50, min_periods=1, center=True).mean().values
+    print("Step 2: Detecting pass-in-flight trajectories and teammate receptions...")
+    pass_team = np.full(n_frames, -1, dtype=np.int8)
+    in_flight = False
+    flight_start = 0
+    striker_team = -1
 
-    # Physical pitch bounds check
     out_of_bounds = (ball_pos[:, 0] < -0.2) | (ball_pos[:, 0] > pitch_len + 0.2) | \
                     (ball_pos[:, 1] < -0.2) | (ball_pos[:, 1] > pitch_wid + 0.2)
 
-    dead_candidate = out_of_bounds | ((smooth_speed < speed_thresh) & (np.minimum(min_dist_h, min_dist_a) > 2.0))
+    for f in range(1, n_frames):
+        dh = min_dist_h[f]
+        da = min_dist_a[f]
+        bs = ball_speed[f]
+
+        if not in_flight:
+            if bs >= 3.5 and min(dh, da) > 1.2:
+                prev_dh = np.min(min_dist_h[max(0, f - 10):f])
+                prev_da = np.min(min_dist_a[max(0, f - 10):f])
+                if prev_dh < 1.8 and prev_dh < prev_da:
+                    striker_team = 0
+                    in_flight = True
+                    flight_start = f
+                elif prev_da < 1.8 and prev_da < prev_dh:
+                    striker_team = 1
+                    in_flight = True
+                    flight_start = f
+        else:
+            if min(dh, da) < 1.5 or bs < 1.5 or out_of_bounds[f] or (f - flight_start > 75):
+                in_flight = False
+                receiver_team = 0 if dh < da else 1
+                if striker_team == receiver_team:
+                    pass_team[flight_start:f] = striker_team
+                striker_team = -1
+
+    print("Step 3: Dual-criterion touchline boundary & stoppage dead ball detection...")
+    df_speed = pd.Series(mean_speed).interpolate().bfill().ffill()
+    smooth_speed = df_speed.rolling(50, min_periods=1, center=True).mean().values
 
     dead_mask = np.zeros(n_frames, dtype=bool)
-    in_dead = False
-    start_d = 0
-    for f in range(n_frames):
-        if dead_candidate[f]:
-            if not in_dead:
-                in_dead = True
-                start_d = f
-        else:
-            if in_dead:
-                in_dead = False
-                if f - start_d >= speed_min_len:
-                    dead_mask[start_d:f] = True
-    if in_dead and (n_frames - start_d >= speed_min_len):
-        dead_mask[start_d:n_frames] = True
 
-    print("Step 3: Controlled possession state machine with turnover hysteresis...")
+    # 3.1 Physical out-of-bounds stoppage
+    in_oob = False
+    start_oob = 0
+    for f in range(n_frames):
+        if out_of_bounds[f]:
+            if not in_oob:
+                in_oob = True
+                start_oob = f
+        else:
+            if in_oob:
+                in_oob = False
+                if f - start_oob >= oob_min_len:
+                    dead_mask[start_oob:f] = True
+    if in_oob and (n_frames - start_oob >= oob_min_len):
+        dead_mask[start_oob:n_frames] = True
+
+    # 3.2 Open-field collective deceleration stoppage
+    decel_candidate = (smooth_speed < speed_thresh) & (np.minimum(min_dist_h, min_dist_a) > 2.0)
+    in_decel = False
+    start_decel = 0
+    for f in range(n_frames):
+        if decel_candidate[f]:
+            if not in_decel:
+                in_decel = True
+                start_decel = f
+        else:
+            if in_decel:
+                in_decel = False
+                if f - start_decel >= speed_min_len:
+                    dead_mask[start_decel:f] = True
+    if in_decel and (n_frames - start_decel >= speed_min_len):
+        dead_mask[start_decel:n_frames] = True
+
+    print("Step 4: Controlled possession state machine with turnover hysteresis...")
     HOME, AWAY, DEAD = 0, 1, 2
     state = DEAD
     labels_out = np.full(n_frames, "D", dtype="<U1")
@@ -160,6 +216,19 @@ def build_controlled_possession(game=GAME, data_dir=None,
             h_control_count = 0
             a_control_count = 0
         else:
+            # Check if this frame is a locked pass in flight between teammates
+            locked_team = pass_team[f]
+            if locked_team != -1:
+                state = locked_team
+                if locked_team == 0:
+                    h_control_count = 5
+                    a_control_count = 0
+                else:
+                    a_control_count = 5
+                    h_control_count = 0
+                labels_out[f] = "H" if state == HOME else "A"
+                continue
+
             dh = min_dist_h[f]
             da = min_dist_a[f]
             bs = ball_speed[f]
@@ -179,7 +248,10 @@ def build_controlled_possession(game=GAME, data_dir=None,
                 a_control_count = max(0, a_control_count - 1)
 
             if state == DEAD:
-                if in_field and (bs > 2.5 or dh < 1.5 or da < 1.5):
+                # Stationary ball protection: requires kick impulse or moving player control
+                is_kicked = (bs >= restart_min_speed)
+                is_moving_ctrl = (np.minimum(dh, da) < 1.5) and (smooth_speed[f] >= 1.45)
+                if in_field and (is_kicked or is_moving_ctrl):
                     if h_control_count >= 5 or (dh < 1.5 and dh < da):
                         state = HOME
                     elif a_control_count >= 5 or (da < 1.5 and da < dh):
@@ -198,7 +270,7 @@ def build_controlled_possession(game=GAME, data_dir=None,
         else:
             labels_out[f] = "D"
 
-    print("Step 4: Glitch filtering...")
+    print("Step 5: Glitch filtering...")
     runs = []
     cur_lbl = labels_out[0]
     start_f = 0
